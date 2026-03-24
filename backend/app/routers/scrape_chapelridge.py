@@ -48,12 +48,23 @@ async def scrape_chapelridge():
     records = body.get("data") or []
     new_obits: list[dict] = []
 
+    # Build a set of existing (deceased_name, date_of_death) pairs for fast lookup
+    existing_keys = {
+        (r["deceased_name"], r["date_of_death"])
+        for r in obits_db.values()
+    }
+
     for rec in records:
+        name = rec.get("name", "Unknown")
+        dod = rec.get("dod")
+        if (name, dod) in existing_keys:
+            continue
+
         obit_id = str(uuid.uuid4())
         record = {
             "id": obit_id,
-            "deceased_name": rec.get("name", "Unknown"),
-            "date_of_death": rec.get("dod"),
+            "deceased_name": name,
+            "date_of_death": dod,
             "newspaper": "Chapel Ridge FH",
             "monument_ordered": False,
             "notes": rec.get("url", ""),
@@ -61,5 +72,6 @@ async def scrape_chapelridge():
         }
         obits_db[obit_id] = record
         new_obits.append(record)
+        existing_keys.add((name, dod))
 
     return new_obits
