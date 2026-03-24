@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.routers.scrape_chapelridge import router as chapelridge_router
+from app.routers.monuments import router as monuments_router
 
 # ---------------------------------------------------------------------------
 # App
@@ -26,11 +27,13 @@ app.add_middleware(
 )
 
 app.include_router(chapelridge_router, prefix="/api/obits/scrape/chapelridge")
+app.include_router(monuments_router, prefix="/api/monuments")
 
 # ---------------------------------------------------------------------------
 # In-memory store
 # ---------------------------------------------------------------------------
 obits_db: dict[str, dict] = {}
+monuments_db: dict[str, dict] = {}
 
 # Seed a couple of sample records so the table isn't empty on first load.
 _seed = [
