@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef, useMemo } from "react";
+import { authFetch } from "../auth";
 
 /**
  * Compress an image file to fit under maxSizeMB using the Canvas API.
@@ -78,10 +79,9 @@ type Monument = {
   date_of_birth: string | null;
   date_of_death: string | null;
   notes: string;
+  photo_url: string | null;
   created_at: string;
 };
-
-const API_BASE = import.meta.env.VITE_API_URL || "";
 
 const ADD_NEW_SENTINEL = "__ADD_NEW__";
 
@@ -100,6 +100,33 @@ export function MonumentsPage() {
   const [compressing, setCompressing] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  // ---- Manual add form state ----
+  const [showManualForm, setShowManualForm] = useState(false);
+  const [manualCemetery, setManualCemetery] = useState("");
+  const [manualName, setManualName] = useState("");
+  const [manualDob, setManualDob] = useState("");
+  const [manualDod, setManualDod] = useState("");
+  const [manualNotes, setManualNotes] = useState("");
+  const [manualSubmitting, setManualSubmitting] = useState(false);
+  const [manualError, setManualError] = useState<string | null>(null);
+
+  // ---- Edit state ----
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editFields, setEditFields] = useState({
+    cemetery_name: "",
+    deceased_name: "",
+    date_of_birth: "",
+    date_of_death: "",
+    notes: "",
+  });
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editSaving, setEditSaving] = useState(false);
+
+  // ---- Re-OCR state ----
+  const [reOcrId, setReOcrId] = useState<string | null>(null);
+  const [reOcrSubmitting, setReOcrSubmitting] = useState(false);
+  const reOcrInputRef = useRef<HTMLInputElement>(null);
 
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -127,7 +154,7 @@ export function MonumentsPage() {
   // ---- Fetch monuments ----
   const fetchMonuments = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/monuments`);
+      const res = await authFetch("/api/monuments");
       if (!res.ok) {
         const text = await res.text();
         throw new Error(`Request failed: ${res.status} ${text}`);
@@ -184,7 +211,7 @@ export function MonumentsPage() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  // ---- Submit ----
+  // ---- Submit photo upload ----
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit || !selectedFile) return;
@@ -198,7 +225,7 @@ export function MonumentsPage() {
       formData.append("cemetery_name", effectiveCemeteryName);
       formData.append("file", selectedFile);
 
-      const res = await fetch(`${API_BASE}/api/monuments/from-photo`, {
+      const res = await authFetch("/api/monuments/from-photo", {
         method: "POST",
         body: formData,
       });
@@ -218,6 +245,138 @@ export function MonumentsPage() {
       setUploadError(err instanceof Error ? err.message : String(err));
     } finally {
       setUploading(false);
+    }
+  };
+
+  // ---- Manual add submit ----
+  const handleManualSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualCemetery.trim()) return;
+    setManualSubmitting(true);
+    setManualError(null);
+    try {
+      const res = await authFetch("/api/monuments/manual", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cemetery_name: manualCemetery.trim(),
+          deceased_name: manualName.trim() || null,
+          date_of_birth: manualDob || null,
+          date_of_death: manualDod || null,
+          notes: manualNotes || null,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Failed: ${res.status} ${text}`);
+      }
+      setShowManualForm(false);
+      setManualCemetery("");
+      setManualName("");
+      setManualDob("");
+      setManualDod("");
+      setManualNotes("");
+      setSuccessMsg("Monument added manually!");
+      await fetchMonuments();
+    } catch (err: unknown) {
+      setManualError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setManualSubmitting(false);
+    }
+  };
+
+  // ---- Delete ----
+  const handleDelete = async (id: string) => {
+    if (!window.confirm("Are you sure you want to delete this monument?")) return;
+    try {
+      const res = await authFetch(`/api/monuments/${id}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 204) {
+        throw new Error("Delete failed");
+      }
+      await fetchMonuments();
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "Delete failed");
+    }
+  };
+
+  // ---- Edit ----
+  const startEdit = (m: Monument) => {
+    setEditingId(m.id);
+    setEditFields({
+      cemetery_name: m.cemetery_name,
+      deceased_name: m.deceased_name ?? "",
+      date_of_birth: m.date_of_birth ?? "",
+      date_of_death: m.date_of_death ?? "",
+      notes: m.notes ?? "",
+    });
+    setEditError(null);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditError(null);
+  };
+
+  const handleEditSave = async () => {
+    if (!editingId) return;
+    setEditSaving(true);
+    setEditError(null);
+    try {
+      const res = await authFetch(`/api/monuments/${editingId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cemetery_name: editFields.cemetery_name,
+          deceased_name: editFields.deceased_name || null,
+          date_of_birth: editFields.date_of_birth || null,
+          date_of_death: editFields.date_of_death || null,
+          notes: editFields.notes,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Save failed: ${res.status} ${text}`);
+      }
+      setEditingId(null);
+      await fetchMonuments();
+    } catch (err: unknown) {
+      setEditError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
+  // ---- Re-OCR ----
+  const handleReOcrClick = (id: string) => {
+    setReOcrId(id);
+    // Trigger file picker after state update
+    setTimeout(() => reOcrInputRef.current?.click(), 0);
+  };
+
+  const handleReOcrFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.files?.[0];
+    if (!raw || !reOcrId) return;
+    setReOcrSubmitting(true);
+    try {
+      const file = await compressImage(raw);
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await authFetch(`/api/monuments/${reOcrId}/re-ocr`, {
+        method: "POST",
+        body: formData,
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Re-OCR failed: ${res.status} ${text}`);
+      }
+      setSuccessMsg("Photo re-uploaded and OCR re-processed!");
+      await fetchMonuments();
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "Re-OCR failed");
+    } finally {
+      setReOcrSubmitting(false);
+      setReOcrId(null);
+      if (reOcrInputRef.current) reOcrInputRef.current.value = "";
     }
   };
 
@@ -284,6 +443,22 @@ export function MonumentsPage() {
     fontWeight: 600,
   };
 
+  const btnDangerStyle: React.CSSProperties = {
+    ...btnStyle,
+    color: "#b91c1c",
+    borderColor: "#b91c1c",
+    fontSize: "0.8rem",
+    padding: "0.3rem 0.6rem",
+  };
+
+  const editInputStyle: React.CSSProperties = {
+    padding: "0.3rem 0.5rem",
+    borderRadius: 4,
+    border: "1px solid #ccc",
+    fontSize: "0.85rem",
+    width: "100%",
+  };
+
   const thStyle: React.CSSProperties = {
     borderBottom: "1px solid #ccc",
     textAlign: "left" as const,
@@ -293,6 +468,15 @@ export function MonumentsPage() {
   return (
     <div style={{ padding: "1rem" }}>
       <h1>Monuments</h1>
+
+      {/* Hidden re-OCR file input */}
+      <input
+        ref={reOcrInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleReOcrFile}
+        style={{ display: "none" }}
+      />
 
       {/* ==================== Upload Form ==================== */}
       <form onSubmit={handleSubmit} style={formContainerStyle}>
@@ -375,7 +559,7 @@ export function MonumentsPage() {
               style={btnStyle}
               onClick={() => cameraInputRef.current?.click()}
             >
-              📷 Take Photo
+              Take Photo
             </button>
 
             {/* Hidden file input */}
@@ -392,7 +576,7 @@ export function MonumentsPage() {
               style={btnStyle}
               onClick={() => fileInputRef.current?.click()}
             >
-              📁 Upload Photo
+              Upload Photo
             </button>
           </div>
         </div>
@@ -432,7 +616,7 @@ export function MonumentsPage() {
                 borderColor: "#b91c1c",
               }}
             >
-              ✕ Clear
+              Clear
             </button>
           </div>
         )}
@@ -483,44 +667,272 @@ export function MonumentsPage() {
         </button>
       </form>
 
+      {/* ==================== Manual Add Button / Form ==================== */}
+      {!showManualForm ? (
+        <div style={{ marginBottom: "1.5rem" }}>
+          <button style={btnStyle} onClick={() => setShowManualForm(true)}>
+            + Add Manually (no photo)
+          </button>
+        </div>
+      ) : (
+        <form onSubmit={handleManualSubmit} style={formContainerStyle}>
+          <h2 style={{ marginTop: 0, marginBottom: "1rem", fontSize: "1.1rem" }}>
+            Add Monument Manually
+          </h2>
+          <div style={fieldGroupStyle}>
+            <label style={labelStyle}>Cemetery *</label>
+            <input
+              type="text"
+              value={manualCemetery}
+              onChange={(e) => setManualCemetery(e.target.value)}
+              required
+              style={{ ...inputStyle, marginTop: 0 }}
+            />
+          </div>
+          <div style={fieldGroupStyle}>
+            <label style={labelStyle}>Deceased Name</label>
+            <input
+              type="text"
+              value={manualName}
+              onChange={(e) => setManualName(e.target.value)}
+              style={{ ...inputStyle, marginTop: 0 }}
+            />
+          </div>
+          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: "1rem" }}>
+            <div>
+              <label style={labelStyle}>Date of Birth</label>
+              <input
+                type="text"
+                placeholder="e.g. 1940"
+                value={manualDob}
+                onChange={(e) => setManualDob(e.target.value)}
+                style={{ ...inputStyle, marginTop: 0, maxWidth: 160 }}
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>Date of Death</label>
+              <input
+                type="text"
+                placeholder="e.g. 2020"
+                value={manualDod}
+                onChange={(e) => setManualDod(e.target.value)}
+                style={{ ...inputStyle, marginTop: 0, maxWidth: 160 }}
+              />
+            </div>
+          </div>
+          <div style={fieldGroupStyle}>
+            <label style={labelStyle}>Notes</label>
+            <textarea
+              value={manualNotes}
+              onChange={(e) => setManualNotes(e.target.value)}
+              rows={3}
+              style={{ ...inputStyle, marginTop: 0, maxWidth: "100%", resize: "vertical" }}
+            />
+          </div>
+          {manualError && (
+            <div
+              style={{
+                color: "#b91c1c",
+                background: "#fef2f2",
+                border: "1px solid #fca5a5",
+                borderRadius: 4,
+                padding: "0.5rem 0.75rem",
+                marginBottom: "1rem",
+                fontSize: "0.9rem",
+              }}
+            >
+              {manualError}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            <button type="submit" disabled={manualSubmitting} style={btnPrimaryStyle}>
+              {manualSubmitting ? "Saving…" : "Save"}
+            </button>
+            <button type="button" style={btnStyle} onClick={() => setShowManualForm(false)}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* ==================== Re-OCR loading indicator ==================== */}
+      {reOcrSubmitting && (
+        <div
+          style={{
+            color: "#1d4ed8",
+            background: "#eff6ff",
+            border: "1px solid #93c5fd",
+            borderRadius: 4,
+            padding: "0.5rem 0.75rem",
+            marginBottom: "1rem",
+            fontSize: "0.9rem",
+          }}
+        >
+          Re-processing OCR…
+        </div>
+      )}
+
       {/* ==================== Monuments Table ==================== */}
       {loading ? (
         <div>Loading monuments…</div>
       ) : error ? (
         <div>Error loading monuments: {error}</div>
       ) : monuments.length === 0 ? (
-        <div>No monuments yet. Try uploading a photo first.</div>
+        <div>No monuments yet. Try uploading a photo or adding manually.</div>
       ) : (
-        <table style={{ borderCollapse: "collapse", width: "100%" }}>
-          <thead>
-            <tr>
-              <th style={thStyle}>Cemetery</th>
-              <th style={thStyle}>Name</th>
-              <th style={thStyle}>Born</th>
-              <th style={thStyle}>Died</th>
-              <th style={thStyle}>Created at</th>
-            </tr>
-          </thead>
-          <tbody>
-            {monuments.map((m) => (
-              <tr key={m.id}>
-                <td style={{ padding: "0.25rem 0.5rem" }}>{m.cemetery_name}</td>
-                <td style={{ padding: "0.25rem 0.5rem" }}>
-                  {m.deceased_name ?? "—"}
-                </td>
-                <td style={{ padding: "0.25rem 0.5rem" }}>
-                  {m.date_of_birth ?? "—"}
-                </td>
-                <td style={{ padding: "0.25rem 0.5rem" }}>
-                  {m.date_of_death ?? "—"}
-                </td>
-                <td style={{ padding: "0.25rem 0.5rem" }}>
-                  {new Date(m.created_at).toLocaleString()}
-                </td>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", width: "100%" }}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Photo</th>
+                <th style={thStyle}>Cemetery</th>
+                <th style={thStyle}>Name</th>
+                <th style={thStyle}>Born</th>
+                <th style={thStyle}>Died</th>
+                <th style={thStyle}>Notes</th>
+                <th style={thStyle}>Created</th>
+                <th style={thStyle}>Actions</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {monuments.map((m) =>
+                editingId === m.id ? (
+                  <tr key={m.id} style={{ background: "#fffbeb" }}>
+                    <td style={{ padding: "0.5rem" }}>
+                      {m.photo_url && (
+                        <img
+                          src={`/api/monuments/${m.id}/photo`}
+                          alt="Monument"
+                          style={{ width: 48, height: 48, objectFit: "cover", borderRadius: 4 }}
+                          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                        />
+                      )}
+                    </td>
+                    <td style={{ padding: "0.5rem" }}>
+                      <input
+                        style={editInputStyle}
+                        value={editFields.cemetery_name}
+                        onChange={(e) =>
+                          setEditFields((f) => ({ ...f, cemetery_name: e.target.value }))
+                        }
+                      />
+                    </td>
+                    <td style={{ padding: "0.5rem" }}>
+                      <input
+                        style={editInputStyle}
+                        value={editFields.deceased_name}
+                        onChange={(e) =>
+                          setEditFields((f) => ({ ...f, deceased_name: e.target.value }))
+                        }
+                      />
+                    </td>
+                    <td style={{ padding: "0.5rem" }}>
+                      <input
+                        style={editInputStyle}
+                        value={editFields.date_of_birth}
+                        onChange={(e) =>
+                          setEditFields((f) => ({ ...f, date_of_birth: e.target.value }))
+                        }
+                      />
+                    </td>
+                    <td style={{ padding: "0.5rem" }}>
+                      <input
+                        style={editInputStyle}
+                        value={editFields.date_of_death}
+                        onChange={(e) =>
+                          setEditFields((f) => ({ ...f, date_of_death: e.target.value }))
+                        }
+                      />
+                    </td>
+                    <td style={{ padding: "0.5rem" }}>
+                      <textarea
+                        style={{ ...editInputStyle, resize: "vertical" }}
+                        rows={2}
+                        value={editFields.notes}
+                        onChange={(e) =>
+                          setEditFields((f) => ({ ...f, notes: e.target.value }))
+                        }
+                      />
+                    </td>
+                    <td style={{ padding: "0.5rem", fontSize: "0.8rem" }}>
+                      {new Date(m.created_at).toLocaleString()}
+                    </td>
+                    <td style={{ padding: "0.5rem" }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem" }}>
+                        <button
+                          style={{ ...btnPrimaryStyle, fontSize: "0.8rem", padding: "0.3rem 0.6rem" }}
+                          onClick={handleEditSave}
+                          disabled={editSaving}
+                        >
+                          {editSaving ? "Saving…" : "Save"}
+                        </button>
+                        <button
+                          style={{ ...btnStyle, fontSize: "0.8rem", padding: "0.3rem 0.6rem" }}
+                          onClick={cancelEdit}
+                        >
+                          Cancel
+                        </button>
+                        {editError && (
+                          <span style={{ color: "#b91c1c", fontSize: "0.75rem" }}>{editError}</span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  <tr key={m.id}>
+                    <td style={{ padding: "0.25rem 0.5rem" }}>
+                      {m.photo_url ? (
+                        <img
+                          src={`/api/monuments/${m.id}/photo`}
+                          alt="Monument"
+                          style={{ width: 48, height: 48, objectFit: "cover", borderRadius: 4, display: "block" }}
+                          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                        />
+                      ) : (
+                        <span style={{ color: "#999", fontSize: "0.8rem" }}>No photo</span>
+                      )}
+                    </td>
+                    <td style={{ padding: "0.25rem 0.5rem" }}>{m.cemetery_name}</td>
+                    <td style={{ padding: "0.25rem 0.5rem" }}>
+                      {m.deceased_name ?? "—"}
+                    </td>
+                    <td style={{ padding: "0.25rem 0.5rem" }}>
+                      {m.date_of_birth ?? "—"}
+                    </td>
+                    <td style={{ padding: "0.25rem 0.5rem" }}>
+                      {m.date_of_death ?? "—"}
+                    </td>
+                    <td style={{ padding: "0.25rem 0.5rem", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {m.notes || "—"}
+                    </td>
+                    <td style={{ padding: "0.25rem 0.5rem" }}>
+                      {new Date(m.created_at).toLocaleString()}
+                    </td>
+                    <td style={{ padding: "0.25rem 0.5rem" }}>
+                      <div style={{ display: "flex", gap: "0.3rem", flexWrap: "wrap" }}>
+                        <button style={{ ...btnStyle, fontSize: "0.8rem", padding: "0.3rem 0.6rem" }} onClick={() => startEdit(m)}>
+                          Edit
+                        </button>
+                        {m.photo_url && (
+                          <button
+                            style={{ ...btnStyle, fontSize: "0.8rem", padding: "0.3rem 0.6rem" }}
+                            onClick={() => handleReOcrClick(m.id)}
+                            disabled={reOcrSubmitting}
+                          >
+                            Re-upload
+                          </button>
+                        )}
+                        <button style={btnDangerStyle} onClick={() => handleDelete(m.id)}>
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              )}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

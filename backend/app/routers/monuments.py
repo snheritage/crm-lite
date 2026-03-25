@@ -13,6 +13,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional
 
 from app.auth import get_current_user
 from app.database import get_db
@@ -36,6 +37,22 @@ class MonumentOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class MonumentUpdate(BaseModel):
+    cemetery_name: Optional[str] = None
+    deceased_name: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    date_of_death: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class MonumentManualCreate(BaseModel):
+    cemetery_name: str
+    deceased_name: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    date_of_death: Optional[str] = None
+    notes: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +243,29 @@ async def create_monument_from_photo(
     return _monument_to_out(monument)
 
 
+@router.post("/manual", response_model=MonumentOut, status_code=201)
+async def create_monument_manual(
+    payload: MonumentManualCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a monument record manually (no photo)."""
+    monument = Monument(
+        user_id=current_user.id,
+        cemetery_name=payload.cemetery_name,
+        deceased_name=payload.deceased_name,
+        date_of_birth=payload.date_of_birth,
+        date_of_death=payload.date_of_death,
+        notes=payload.notes or "",
+        photo_url=None,
+        ocr_raw_text=None,
+    )
+    db.add(monument)
+    await db.flush()
+    await db.refresh(monument)
+    return _monument_to_out(monument)
+
+
 @router.get("", response_model=list[MonumentOut])
 async def list_monuments(
     current_user: User = Depends(get_current_user),
@@ -275,6 +315,86 @@ async def get_monument_photo(
         raise HTTPException(status_code=503, detail="S3 is not configured")
 
     return RedirectResponse(url=url)
+
+
+@router.put("/{monument_id}", response_model=MonumentOut)
+async def update_monument(
+    monument_id: str,
+    payload: MonumentUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Edit a monument's fields. Owners edit their own; admins edit any."""
+    try:
+        mid = uuid.UUID(monument_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid monument ID")
+
+    result = await db.execute(select(Monument).where(Monument.id == mid))
+    monument = result.scalar_one_or_none()
+
+    if monument is None:
+        raise HTTPException(status_code=404, detail="Monument not found")
+    if not current_user.is_admin and monument.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Monument not found")
+
+    update_data = payload.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(monument, key, value)
+
+    await db.flush()
+    await db.refresh(monument)
+    return _monument_to_out(monument)
+
+
+@router.post("/{monument_id}/re-ocr", response_model=MonumentOut)
+async def re_ocr_monument(
+    monument_id: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-upload photo and re-run OCR on a monument."""
+    try:
+        mid = uuid.UUID(monument_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid monument ID")
+
+    result = await db.execute(select(Monument).where(Monument.id == mid))
+    monument = result.scalar_one_or_none()
+
+    if monument is None:
+        raise HTTPException(status_code=404, detail="Monument not found")
+    if not current_user.is_admin and monument.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Monument not found")
+
+    image_bytes = await file.read()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    # Delete old photo from S3
+    if monument.photo_url:
+        delete_photo(monument.photo_url)
+
+    # Run OCR
+    full_text = await _ocr_space_extract_text(image_bytes)
+    parsed = _parse_ocr_text(full_text)
+
+    # Upload new photo
+    await file.seek(0)
+    photo_key = await upload_monument_photo(file, str(monument.id))
+
+    # Update record
+    monument.photo_url = photo_key
+    monument.ocr_raw_text = full_text
+    monument.deceased_name = parsed["deceased_name"]
+    monument.date_of_birth = parsed["date_of_birth"]
+    monument.date_of_death = parsed["date_of_death"]
+    monument.notes = full_text
+
+    await db.flush()
+    await db.refresh(monument)
+    return _monument_to_out(monument)
 
 
 @router.delete("/{monument_id}", status_code=204)

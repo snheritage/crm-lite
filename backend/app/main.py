@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import get_current_user
 from app.database import engine, get_db
 from app.models import Obit, User
+from app.routers.admin import router as admin_router
 from app.routers.auth import router as auth_router
 from app.routers.monuments import router as monuments_router
 from app.routers.scrape_chapelridge import router as chapelridge_router
@@ -35,6 +36,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(admin_router, prefix="/api/admin")
 app.include_router(auth_router, prefix="/api/auth")
 app.include_router(chapelridge_router, prefix="/api/obits/scrape/chapelridge")
 app.include_router(monuments_router, prefix="/api/monuments")

@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
-import { Routes, Route, Link } from "react-router-dom";
+import { Routes, Route, Link, Navigate, useNavigate } from "react-router-dom";
+import { AuthProvider, useAuth, authFetch } from "./auth";
 import { MonumentsPage } from "./pages/MonumentsPage";
+import { LoginPage } from "./pages/LoginPage";
+import { RegisterPage } from "./pages/RegisterPage";
+import { AdminDashboardPage } from "./pages/AdminDashboardPage";
+import { AdminUsersPage } from "./pages/AdminUsersPage";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -15,14 +20,28 @@ interface Obit {
   created_at: string;
 }
 
-// Use relative URLs so the Vite proxy (dev) or same-origin (prod) works.
-const API = import.meta.env.VITE_API_URL ?? "";
+// ---------------------------------------------------------------------------
+// Protected Route wrapper
+// ---------------------------------------------------------------------------
+function RequireAuth({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuth();
+  if (loading) return <div style={{ padding: "2rem" }}>Loading…</div>;
+  if (!user) return <Navigate to="/login" replace />;
+  return <>{children}</>;
+}
+
+function RequireAdmin({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuth();
+  if (loading) return <div style={{ padding: "2rem" }}>Loading…</div>;
+  if (!user) return <Navigate to="/login" replace />;
+  if (!user.is_admin) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
 
 // ---------------------------------------------------------------------------
 // Obits Page (original home content)
 // ---------------------------------------------------------------------------
 function ObitsPage() {
-  const [health, setHealth] = useState<string>("checking…");
   const [obits, setObits] = useState<Obit[]>([]);
 
   // Form state
@@ -32,29 +51,19 @@ function ObitsPage() {
   const [ordered, setOrdered] = useState(false);
   const [notes, setNotes] = useState("");
 
-  // ------ Fetch helpers ---------------------------------------------------
-  const fetchHealth = async () => {
-    try {
-      const res = await fetch(`${API}/api/health`);
-      const data = await res.json();
-      setHealth(data.status ?? "unknown");
-    } catch {
-      setHealth("error");
-    }
-  };
-
   const fetchObits = async () => {
     try {
-      const res = await fetch(`${API}/api/obits`);
-      const data: Obit[] = await res.json();
-      setObits(data);
+      const res = await authFetch("/api/obits");
+      if (res.ok) {
+        const data: Obit[] = await res.json();
+        setObits(data);
+      }
     } catch {
       console.error("Failed to load obits");
     }
   };
 
   useEffect(() => {
-    fetchHealth();
     fetchObits();
   }, []);
 
@@ -62,7 +71,7 @@ function ObitsPage() {
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
-    await fetch(`${API}/api/obits`, {
+    await authFetch("/api/obits", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -83,17 +92,13 @@ function ObitsPage() {
 
   // ------ Delete ----------------------------------------------------------
   const handleDelete = async (id: string) => {
-    await fetch(`${API}/api/obits/${id}`, { method: "DELETE" });
+    await authFetch(`/api/obits/${id}`, { method: "DELETE" });
     fetchObits();
   };
 
   // ------ Render ----------------------------------------------------------
   return (
     <>
-      <span className={`health-badge ${health === "ok" ? "ok" : "err"}`}>
-        API: {health}
-      </span>
-
       {/* Quick-add form */}
       <form className="add-form" onSubmit={handleAdd}>
         <input
@@ -176,21 +181,105 @@ function ObitsPage() {
 }
 
 // ---------------------------------------------------------------------------
+// Nav Bar
+// ---------------------------------------------------------------------------
+function NavBar() {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+    logout();
+    navigate("/login");
+  };
+
+  return (
+    <nav
+      style={{
+        marginBottom: "1rem",
+        display: "flex",
+        alignItems: "center",
+        gap: "1rem",
+        flexWrap: "wrap",
+      }}
+    >
+      {user ? (
+        <>
+          <Link to="/">Obituaries</Link>
+          <Link to="/monuments">Monuments</Link>
+          {user.is_admin && <Link to="/admin">Admin</Link>}
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "0.75rem" }}>
+            <span style={{ fontSize: "0.85rem", color: "#555" }}>
+              {user.full_name || user.email}
+            </span>
+            <button
+              className="btn"
+              style={{ fontSize: "0.8rem", padding: "4px 12px" }}
+              onClick={handleLogout}
+            >
+              Logout
+            </button>
+          </div>
+        </>
+      ) : (
+        <Link to="/login">Login</Link>
+      )}
+    </nav>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // App with routing
 // ---------------------------------------------------------------------------
-export default function App() {
+function AppRoutes() {
   return (
     <div className="container">
       <h1>obit-crm-lite</h1>
-      <nav style={{ marginBottom: "1rem" }}>
-        <Link to="/" style={{ marginRight: "1rem" }}>Obituaries</Link>
-        <Link to="/monuments">Monuments</Link>
-      </nav>
+      <NavBar />
 
       <Routes>
-        <Route path="/" element={<ObitsPage />} />
-        <Route path="/monuments" element={<MonumentsPage />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+        <Route
+          path="/"
+          element={
+            <RequireAuth>
+              <ObitsPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/monuments"
+          element={
+            <RequireAuth>
+              <MonumentsPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin"
+          element={
+            <RequireAdmin>
+              <AdminDashboardPage />
+            </RequireAdmin>
+          }
+        />
+        <Route
+          path="/admin/users"
+          element={
+            <RequireAdmin>
+              <AdminUsersPage />
+            </RequireAdmin>
+          }
+        />
       </Routes>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppRoutes />
+    </AuthProvider>
   );
 }
