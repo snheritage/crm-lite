@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { Routes, Route, Link } from "react-router-dom";
+import { MonumentsPage } from "./pages/MonumentsPage";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -17,9 +19,9 @@ interface Obit {
 const API = import.meta.env.VITE_API_URL ?? "";
 
 // ---------------------------------------------------------------------------
-// Component
+// Obits Page (original home content)
 // ---------------------------------------------------------------------------
-export default function App() {
+function ObitsPage() {
   const [health, setHealth] = useState<string>("checking…");
   const [obits, setObits] = useState<Obit[]>([]);
 
@@ -87,8 +89,7 @@ export default function App() {
 
   // ------ Render ----------------------------------------------------------
   return (
-    <div className="container">
-      <h1>obit-crm-lite</h1>
+    <>
       <span className={`health-badge ${health === "ok" ? "ok" : "err"}`}>
         API: {health}
       </span>
@@ -170,6 +171,26 @@ export default function App() {
           )}
         </tbody>
       </table>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// App with routing
+// ---------------------------------------------------------------------------
+export default function App() {
+  return (
+    <div className="container">
+      <h1>obit-crm-lite</h1>
+      <nav style={{ marginBottom: "1rem" }}>
+        <Link to="/" style={{ marginRight: "1rem" }}>Obituaries</Link>
+        <Link to="/monuments">Monuments</Link>
+      </nav>
+
+      <Routes>
+        <Route path="/" element={<ObitsPage />} />
+        <Route path="/monuments" element={<MonumentsPage />} />
+      </Routes>
     </div>
   );
 }
