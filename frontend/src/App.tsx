@@ -6,6 +6,7 @@ import { LoginPage } from "./pages/LoginPage";
 import { RegisterPage } from "./pages/RegisterPage";
 import { AdminDashboardPage } from "./pages/AdminDashboardPage";
 import { AdminUsersPage } from "./pages/AdminUsersPage";
+import { ScrapingSourcesPage } from "./pages/ScrapingSourcesPage";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -206,6 +207,7 @@ function NavBar() {
         <>
           <Link to="/">Obituaries</Link>
           <Link to="/monuments">Monuments</Link>
+          <Link to="/scraping">Sources</Link>
           {user.is_admin && <Link to="/admin">Admin</Link>}
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "0.75rem" }}>
             <span style={{ fontSize: "0.85rem", color: "#555" }}>
@@ -252,6 +254,14 @@ function AppRoutes() {
           element={
             <RequireAuth>
               <MonumentsPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/scraping"
+          element={
+            <RequireAuth>
+              <ScrapingSourcesPage />
             </RequireAuth>
           }
         />

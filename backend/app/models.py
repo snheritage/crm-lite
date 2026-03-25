@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -39,6 +39,7 @@ class User(Base):
     # Relationships
     monuments = relationship("Monument", back_populates="user", cascade="all, delete-orphan")
     obits = relationship("Obit", back_populates="user", cascade="all, delete-orphan")
+    scraping_sources = relationship("ScrapingSource", back_populates="user", cascade="all, delete-orphan")
 
 
 class Monument(Base):
@@ -98,4 +99,42 @@ class Obit(Base):
 
     __table_args__ = (
         Index("ix_obits_user_id", "user_id"),
+    )
+
+
+class ScrapingSource(Base):
+    __tablename__ = "scraping_sources"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(512), nullable=False)
+    url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    source_type: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="generic"
+    )
+    frontrunner_guid: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_scraped_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_scrape_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+
+    # Relationships
+    user = relationship("User", back_populates="scraping_sources")
+
+    __table_args__ = (
+        Index("ix_scraping_sources_user_id", "user_id"),
     )

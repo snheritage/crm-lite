@@ -22,6 +22,7 @@ from app.routers.admin import router as admin_router
 from app.routers.auth import router as auth_router
 from app.routers.monuments import router as monuments_router
 from app.routers.scrape_chapelridge import router as chapelridge_router
+from app.routers.scraping import router as scraping_router
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ app.include_router(admin_router, prefix="/api/admin")
 app.include_router(auth_router, prefix="/api/auth")
 app.include_router(chapelridge_router, prefix="/api/obits/scrape/chapelridge")
 app.include_router(monuments_router, prefix="/api/monuments")
+app.include_router(scraping_router, prefix="/api/scraping")
 
 
 # ---------------------------------------------------------------------------

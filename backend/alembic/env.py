@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # Import our models so Alembic sees them for autogenerate
 from app.database import _build_sync_url, Base  # noqa: F401
-from app.models import User, Monument, Obit  # noqa: F401
+from app.models import User, Monument, Obit, ScrapingSource  # noqa: F401
 
 # Alembic Config object
 config = context.config
