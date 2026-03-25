@@ -1,5 +1,76 @@
 import React, { useEffect, useState, useRef, useMemo } from "react";
 
+/**
+ * Compress an image file to fit under maxSizeMB using the Canvas API.
+ * Returns the original file if already under the limit.
+ */
+async function compressImage(
+  file: File,
+  maxSizeMB = 0.95,
+  maxDimension = 1920
+): Promise<File> {
+  const maxBytes = maxSizeMB * 1024 * 1024;
+
+  // Already small enough — return as-is
+  if (file.size <= maxBytes) return file;
+
+  // Load image into an HTMLImageElement
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = (_e) => reject(new Error("Failed to load image for compression"));
+    image.src = URL.createObjectURL(file);
+  });
+
+  // Determine scaled dimensions (fit within maxDimension on longest side)
+  let { width, height } = img;
+  if (width > maxDimension || height > maxDimension) {
+    const scale = maxDimension / Math.max(width, height);
+    width = Math.round(width * scale);
+    height = Math.round(height * scale);
+  }
+
+  // Draw onto canvas
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas 2D context unavailable");
+  ctx.drawImage(img, 0, 0, width, height);
+
+  // Revoke the temporary object URL
+  URL.revokeObjectURL(img.src);
+
+  // Export as JPEG, iteratively reducing quality until under the limit
+  const qualitySteps = [0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2];
+  for (const quality of qualitySteps) {
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/jpeg", quality)
+    );
+    if (blob && blob.size <= maxBytes) {
+      const compressedName = file.name.replace(/\.[^.]+$/, "") + ".jpg";
+      return new File([blob], compressedName, { type: "image/jpeg" });
+    }
+  }
+
+  // If still too large after lowest quality, scale down further and try once more
+  const smallerScale = 0.5;
+  canvas.width = Math.round(width * smallerScale);
+  canvas.height = Math.round(height * smallerScale);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+  const finalBlob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, "image/jpeg", 0.5)
+  );
+  if (finalBlob) {
+    const compressedName = file.name.replace(/\.[^.]+$/, "") + ".jpg";
+    return new File([finalBlob], compressedName, { type: "image/jpeg" });
+  }
+
+  // Fallback: return original
+  return file;
+}
+
 type Monument = {
   id: string;
   cemetery_name: string;
@@ -26,6 +97,7 @@ export function MonumentsPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [compressing, setCompressing] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
@@ -50,7 +122,7 @@ export function MonumentsPage() {
       : cemeterySelect;
 
   const canSubmit =
-    effectiveCemeteryName.length > 0 && selectedFile !== null && !uploading;
+    effectiveCemeteryName.length > 0 && selectedFile !== null && !uploading && !compressing;
 
   // ---- Fetch monuments ----
   const fetchMonuments = async () => {
@@ -74,18 +146,33 @@ export function MonumentsPage() {
   }, []);
 
   // ---- File selection handler ----
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0] ?? null;
-    setSelectedFile(file);
-    if (file) {
-      const url = URL.createObjectURL(file);
-      setPreviewUrl(url);
-    } else {
-      setPreviewUrl(null);
-    }
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.files?.[0] ?? null;
     // Clear success/error when user picks a new file
     setSuccessMsg(null);
     setUploadError(null);
+
+    if (!raw) {
+      setSelectedFile(null);
+      setPreviewUrl(null);
+      return;
+    }
+
+    // Compress large images before storing in state
+    setCompressing(true);
+    try {
+      const file = await compressImage(raw);
+      setSelectedFile(file);
+      const url = URL.createObjectURL(file);
+      setPreviewUrl(url);
+    } catch {
+      // Compression failed — fall back to original file
+      setSelectedFile(raw);
+      const url = URL.createObjectURL(raw);
+      setPreviewUrl(url);
+    } finally {
+      setCompressing(false);
+    }
   };
 
   const clearFile = () => {
@@ -251,6 +338,23 @@ export function MonumentsPage() {
             />
           )}
         </div>
+
+        {/* Compressing indicator */}
+        {compressing && (
+          <div
+            style={{
+              color: "#1d4ed8",
+              background: "#eff6ff",
+              border: "1px solid #93c5fd",
+              borderRadius: 4,
+              padding: "0.5rem 0.75rem",
+              marginBottom: "1rem",
+              fontSize: "0.9rem",
+            }}
+          >
+            Compressing image…
+          </div>
+        )}
 
         {/* Photo input buttons */}
         <div style={fieldGroupStyle}>
