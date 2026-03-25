@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import uuid
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth import get_current_user
+from app.database import get_db
+from app.models import Monument, User
+from app.storage import delete_photo, get_photo_url, upload_monument_photo
 
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
+
 
 class MonumentOut(BaseModel):
     id: str
@@ -23,7 +31,11 @@ class MonumentOut(BaseModel):
     date_of_birth: str | None = None
     date_of_death: str | None = None
     notes: str
+    photo_url: str | None = None
     created_at: str
+
+    class Config:
+        from_attributes = True
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +164,23 @@ def _parse_ocr_text(text: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _monument_to_out(m: Monument) -> MonumentOut:
+    return MonumentOut(
+        id=str(m.id),
+        cemetery_name=m.cemetery_name,
+        deceased_name=m.deceased_name,
+        date_of_birth=m.date_of_birth,
+        date_of_death=m.date_of_death,
+        notes=m.notes,
+        photo_url=m.photo_url,
+        created_at=m.created_at.isoformat(),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
 
@@ -162,36 +191,116 @@ router = APIRouter(redirect_slashes=False)
 async def create_monument_from_photo(
     cemetery_name: str = Form(...),
     file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Upload a monument photo; returns OCR-extracted record."""
-    from app.main import monuments_db
-
     image_bytes = await file.read()
     if not image_bytes:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
     full_text = await _ocr_space_extract_text(image_bytes)
-
     parsed = _parse_ocr_text(full_text)
 
-    record_id = str(uuid.uuid4())
-    record = {
-        "id": record_id,
-        "cemetery_name": cemetery_name,
-        "deceased_name": parsed["deceased_name"],
-        "date_of_birth": parsed["date_of_birth"],
-        "date_of_death": parsed["date_of_death"],
-        "notes": full_text,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
+    monument_id = uuid.uuid4()
 
-    monuments_db[record_id] = record
-    return record
+    # Reset file position so the storage layer can read it too
+    await file.seek(0)
+    photo_key = await upload_monument_photo(file, str(monument_id))
+
+    monument = Monument(
+        id=monument_id,
+        user_id=current_user.id,
+        cemetery_name=cemetery_name,
+        deceased_name=parsed["deceased_name"],
+        date_of_birth=parsed["date_of_birth"],
+        date_of_death=parsed["date_of_death"],
+        notes=full_text,
+        photo_url=photo_key,
+        ocr_raw_text=full_text,
+    )
+    db.add(monument)
+    await db.flush()
+    await db.refresh(monument)
+
+    return _monument_to_out(monument)
 
 
 @router.get("", response_model=list[MonumentOut])
-def list_monuments():
-    """Return all monument records."""
-    from app.main import monuments_db
+async def list_monuments(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return monuments. Admins see all; regular users see only their own."""
+    if current_user.is_admin:
+        result = await db.execute(select(Monument).order_by(Monument.created_at.desc()))
+    else:
+        result = await db.execute(
+            select(Monument)
+            .where(Monument.user_id == current_user.id)
+            .order_by(Monument.created_at.desc())
+        )
 
-    return list(monuments_db.values())
+    monuments = result.scalars().all()
+    return [_monument_to_out(m) for m in monuments]
+
+
+@router.get("/{monument_id}/photo")
+async def get_monument_photo(
+    monument_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Redirect to a presigned S3 URL for the monument photo."""
+    try:
+        mid = uuid.UUID(monument_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid monument ID")
+
+    result = await db.execute(select(Monument).where(Monument.id == mid))
+    monument = result.scalar_one_or_none()
+
+    if monument is None:
+        raise HTTPException(status_code=404, detail="Monument not found")
+
+    # Non-admin can only see own monuments
+    if not current_user.is_admin and monument.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Monument not found")
+
+    if not monument.photo_url:
+        raise HTTPException(status_code=404, detail="No photo available")
+
+    url = get_photo_url(monument.photo_url)
+    if url is None:
+        raise HTTPException(status_code=503, detail="S3 is not configured")
+
+    return RedirectResponse(url=url)
+
+
+@router.delete("/{monument_id}", status_code=204)
+async def delete_monument(
+    monument_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a monument record and its S3 photo."""
+    try:
+        mid = uuid.UUID(monument_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid monument ID")
+
+    result = await db.execute(select(Monument).where(Monument.id == mid))
+    monument = result.scalar_one_or_none()
+
+    if monument is None:
+        raise HTTPException(status_code=404, detail="Monument not found")
+
+    if not current_user.is_admin and monument.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Monument not found")
+
+    # Delete S3 photo if present
+    if monument.photo_url:
+        delete_photo(monument.photo_url)
+
+    await db.delete(monument)
+    return None
