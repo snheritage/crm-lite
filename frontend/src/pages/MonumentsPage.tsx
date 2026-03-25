@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef, useMemo } from "react";
 
 type Monument = {
   id: string;
@@ -12,59 +12,412 @@ type Monument = {
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
+const ADD_NEW_SENTINEL = "__ADD_NEW__";
+
 export function MonumentsPage() {
+  // ---- Monument list state ----
   const [monuments, setMonuments] = useState<Monument[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // ---- Upload form state ----
+  const [cemeterySelect, setCemeterySelect] = useState("");
+  const [newCemeteryName, setNewCemeteryName] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ---- Derived: unique cemetery names ----
+  const cemeteryNames = useMemo(() => {
+    const names = new Set<string>();
+    monuments.forEach((m) => {
+      if (m.cemetery_name) names.add(m.cemetery_name);
+    });
+    return Array.from(names).sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: "base" })
+    );
+  }, [monuments]);
+
+  // ---- Derived: effective cemetery name ----
+  const effectiveCemeteryName =
+    cemeterySelect === ADD_NEW_SENTINEL
+      ? newCemeteryName.trim()
+      : cemeterySelect;
+
+  const canSubmit =
+    effectiveCemeteryName.length > 0 && selectedFile !== null && !uploading;
+
+  // ---- Fetch monuments ----
+  const fetchMonuments = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/monuments`);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Request failed: ${res.status} ${text}`);
+      }
+      const data: Monument[] = await res.json();
+      setMonuments(data);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    const url = `${API_BASE}/api/monuments`;
-    fetch(url)
-      .then(async (res) => {
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(`Request failed: ${res.status} ${text}`);
-        }
-        return res.json();
-      })
-      .then((data) => setMonuments(data))
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
+    fetchMonuments();
   }, []);
 
-  if (loading) return <div>Loading monuments…</div>;
-  if (error) return <div>Error loading monuments: {error}</div>;
-  if (monuments.length === 0) {
-    return <div>No monuments yet. Try uploading a photo first.</div>;
-  }
+  // ---- File selection handler ----
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    setSelectedFile(file);
+    if (file) {
+      const url = URL.createObjectURL(file);
+      setPreviewUrl(url);
+    } else {
+      setPreviewUrl(null);
+    }
+    // Clear success/error when user picks a new file
+    setSuccessMsg(null);
+    setUploadError(null);
+  };
 
+  const clearFile = () => {
+    setSelectedFile(null);
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPreviewUrl(null);
+    // Reset file inputs so the same file can be re-selected
+    if (cameraInputRef.current) cameraInputRef.current.value = "";
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  // ---- Submit ----
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canSubmit || !selectedFile) return;
+
+    setUploading(true);
+    setUploadError(null);
+    setSuccessMsg(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("cemetery_name", effectiveCemeteryName);
+      formData.append("file", selectedFile);
+
+      const res = await fetch(`${API_BASE}/api/monuments/from-photo`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Upload failed: ${res.status} ${text}`);
+      }
+
+      // Success — reset form and refresh list
+      clearFile();
+      setCemeterySelect("");
+      setNewCemeteryName("");
+      setSuccessMsg("Monument created successfully!");
+      await fetchMonuments();
+    } catch (err: unknown) {
+      setUploadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // ---- Auto-dismiss success message ----
+  useEffect(() => {
+    if (!successMsg) return;
+    const timer = setTimeout(() => setSuccessMsg(null), 4000);
+    return () => clearTimeout(timer);
+  }, [successMsg]);
+
+  // ---- Styles (inline, consistent with existing page) ----
+  const formContainerStyle: React.CSSProperties = {
+    border: "1px solid #ddd",
+    borderRadius: 8,
+    padding: "1.25rem",
+    marginBottom: "1.5rem",
+    background: "#fafafa",
+  };
+
+  const labelStyle: React.CSSProperties = {
+    display: "block",
+    fontWeight: 600,
+    marginBottom: "0.25rem",
+    fontSize: "0.9rem",
+  };
+
+  const fieldGroupStyle: React.CSSProperties = {
+    marginBottom: "1rem",
+  };
+
+  const selectStyle: React.CSSProperties = {
+    padding: "0.4rem 0.5rem",
+    borderRadius: 4,
+    border: "1px solid #ccc",
+    fontSize: "0.9rem",
+    width: "100%",
+    maxWidth: 320,
+  };
+
+  const inputStyle: React.CSSProperties = {
+    padding: "0.4rem 0.5rem",
+    borderRadius: 4,
+    border: "1px solid #ccc",
+    fontSize: "0.9rem",
+    width: "100%",
+    maxWidth: 320,
+    marginTop: "0.35rem",
+  };
+
+  const btnStyle: React.CSSProperties = {
+    padding: "0.45rem 1rem",
+    borderRadius: 4,
+    border: "1px solid #ccc",
+    cursor: "pointer",
+    fontSize: "0.9rem",
+    background: "#fff",
+  };
+
+  const btnPrimaryStyle: React.CSSProperties = {
+    ...btnStyle,
+    background: "#2563eb",
+    color: "#fff",
+    border: "1px solid #2563eb",
+    fontWeight: 600,
+  };
+
+  const thStyle: React.CSSProperties = {
+    borderBottom: "1px solid #ccc",
+    textAlign: "left" as const,
+  };
+
+  // ---- Render ----
   return (
     <div style={{ padding: "1rem" }}>
       <h1>Monuments</h1>
-      <table style={{ borderCollapse: "collapse", width: "100%" }}>
-        <thead>
-          <tr>
-            <th style={{ borderBottom: "1px solid #ccc", textAlign: "left" }}>Cemetery</th>
-            <th style={{ borderBottom: "1px solid #ccc", textAlign: "left" }}>Name</th>
-            <th style={{ borderBottom: "1px solid #ccc", textAlign: "left" }}>Born</th>
-            <th style={{ borderBottom: "1px solid #ccc", textAlign: "left" }}>Died</th>
-            <th style={{ borderBottom: "1px solid #ccc", textAlign: "left" }}>Created at</th>
-          </tr>
-        </thead>
-        <tbody>
-          {monuments.map((m) => (
-            <tr key={m.id}>
-              <td style={{ padding: "0.25rem 0.5rem" }}>{m.cemetery_name}</td>
-              <td style={{ padding: "0.25rem 0.5rem" }}>{m.deceased_name ?? "—"}</td>
-              <td style={{ padding: "0.25rem 0.5rem" }}>{m.date_of_birth ?? "—"}</td>
-              <td style={{ padding: "0.25rem 0.5rem" }}>{m.date_of_death ?? "—"}</td>
-              <td style={{ padding: "0.25rem 0.5rem" }}>
-                {new Date(m.created_at).toLocaleString()}
-              </td>
+
+      {/* ==================== Upload Form ==================== */}
+      <form onSubmit={handleSubmit} style={formContainerStyle}>
+        <h2 style={{ marginTop: 0, marginBottom: "1rem", fontSize: "1.1rem" }}>
+          Upload Monument Photo
+        </h2>
+
+        {/* Cemetery selector */}
+        <div style={fieldGroupStyle}>
+          <label style={labelStyle} htmlFor="cemetery-select">
+            Cemetery
+          </label>
+          <select
+            id="cemetery-select"
+            value={cemeterySelect}
+            onChange={(e) => {
+              setCemeterySelect(e.target.value);
+              if (e.target.value !== ADD_NEW_SENTINEL) {
+                setNewCemeteryName("");
+              }
+            }}
+            style={selectStyle}
+          >
+            <option value="" disabled>
+              — Select cemetery —
+            </option>
+            {cemeteryNames.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+            <option value={ADD_NEW_SENTINEL}>Add new…</option>
+          </select>
+
+          {cemeterySelect === ADD_NEW_SENTINEL && (
+            <input
+              type="text"
+              placeholder="Enter new cemetery name"
+              value={newCemeteryName}
+              onChange={(e) => setNewCemeteryName(e.target.value)}
+              style={inputStyle}
+              autoFocus
+            />
+          )}
+        </div>
+
+        {/* Photo input buttons */}
+        <div style={fieldGroupStyle}>
+          <label style={labelStyle}>Photo</label>
+          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+            {/* Hidden camera input */}
+            <input
+              ref={cameraInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={handleFileChange}
+              style={{ display: "none" }}
+              id="camera-input"
+            />
+            <button
+              type="button"
+              style={btnStyle}
+              onClick={() => cameraInputRef.current?.click()}
+            >
+              📷 Take Photo
+            </button>
+
+            {/* Hidden file input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleFileChange}
+              style={{ display: "none" }}
+              id="file-input"
+            />
+            <button
+              type="button"
+              style={btnStyle}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              📁 Upload Photo
+            </button>
+          </div>
+        </div>
+
+        {/* Image preview */}
+        {selectedFile && previewUrl && (
+          <div
+            style={{
+              ...fieldGroupStyle,
+              display: "flex",
+              alignItems: "center",
+              gap: "0.75rem",
+            }}
+          >
+            <img
+              src={previewUrl}
+              alt="Preview"
+              style={{
+                width: 80,
+                height: 80,
+                objectFit: "cover",
+                borderRadius: 4,
+                border: "1px solid #ccc",
+              }}
+            />
+            <span style={{ fontSize: "0.85rem", color: "#555" }}>
+              {selectedFile.name}
+            </span>
+            <button
+              type="button"
+              onClick={clearFile}
+              style={{
+                ...btnStyle,
+                padding: "0.2rem 0.6rem",
+                fontSize: "0.8rem",
+                color: "#b91c1c",
+                borderColor: "#b91c1c",
+              }}
+            >
+              ✕ Clear
+            </button>
+          </div>
+        )}
+
+        {/* Feedback messages */}
+        {uploadError && (
+          <div
+            style={{
+              color: "#b91c1c",
+              background: "#fef2f2",
+              border: "1px solid #fca5a5",
+              borderRadius: 4,
+              padding: "0.5rem 0.75rem",
+              marginBottom: "1rem",
+              fontSize: "0.9rem",
+            }}
+          >
+            {uploadError}
+          </div>
+        )}
+        {successMsg && (
+          <div
+            style={{
+              color: "#166534",
+              background: "#f0fdf4",
+              border: "1px solid #86efac",
+              borderRadius: 4,
+              padding: "0.5rem 0.75rem",
+              marginBottom: "1rem",
+              fontSize: "0.9rem",
+            }}
+          >
+            {successMsg}
+          </div>
+        )}
+
+        {/* Submit */}
+        <button
+          type="submit"
+          disabled={!canSubmit}
+          style={{
+            ...btnPrimaryStyle,
+            opacity: canSubmit ? 1 : 0.5,
+            cursor: canSubmit ? "pointer" : "not-allowed",
+          }}
+        >
+          {uploading ? "Processing…" : "Upload & Process"}
+        </button>
+      </form>
+
+      {/* ==================== Monuments Table ==================== */}
+      {loading ? (
+        <div>Loading monuments…</div>
+      ) : error ? (
+        <div>Error loading monuments: {error}</div>
+      ) : monuments.length === 0 ? (
+        <div>No monuments yet. Try uploading a photo first.</div>
+      ) : (
+        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <thead>
+            <tr>
+              <th style={thStyle}>Cemetery</th>
+              <th style={thStyle}>Name</th>
+              <th style={thStyle}>Born</th>
+              <th style={thStyle}>Died</th>
+              <th style={thStyle}>Created at</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {monuments.map((m) => (
+              <tr key={m.id}>
+                <td style={{ padding: "0.25rem 0.5rem" }}>{m.cemetery_name}</td>
+                <td style={{ padding: "0.25rem 0.5rem" }}>
+                  {m.deceased_name ?? "—"}
+                </td>
+                <td style={{ padding: "0.25rem 0.5rem" }}>
+                  {m.date_of_birth ?? "—"}
+                </td>
+                <td style={{ padding: "0.25rem 0.5rem" }}>
+                  {m.date_of_death ?? "—"}
+                </td>
+                <td style={{ padding: "0.25rem 0.5rem" }}>
+                  {new Date(m.created_at).toLocaleString()}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
