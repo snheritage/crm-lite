@@ -82,14 +82,17 @@ async def _ocr_space_extract_text(image_bytes: bytes) -> str:
 
 _DATE_PATTERN = re.compile(
     r"""
-    (?: # -- Option A: month-day-year written out --
-    (?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?
-    |Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)
-    [\\s.,]+\\d{1,2}[\\s,]*\\d{4}
-
-    |(?:\\d{1,2}[/\\-]\\d{1,2}[/\\-]\\d{2,4})
-    |(?:\\d{4}[/\\-]\\d{1,2}[/\\-]\\d{1,2})
-    |(?:\\d{4})
+    (?:                                   # -- Option A: month-day-year written out --
+        (?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?
+        |Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)
+        [\s.,]+\d{1,2}[\s,]*\d{4}
+    |
+        (?:\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})   # Option B: MM/DD/YYYY or DD-MM-YYYY
+    |
+        (?:\d{4}[/\-]\d{1,2}[/\-]\d{1,2})     # Option C: YYYY-MM-DD
+    |
+        (?:\d{4})                             # Option D: bare year like 1942
+    )
     """,
     re.VERBOSE | re.IGNORECASE,
 )
