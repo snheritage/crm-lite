@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -16,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models import User
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -84,15 +87,28 @@ async def get_current_user(
         payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
         user_id_str: str | None = payload.get("sub")
         if user_id_str is None:
+            logger.warning("JWT payload missing 'sub' claim")
             raise credentials_exception
         user_id = UUID(user_id_str)
-    except (JWTError, ValueError):
+    except (JWTError, ValueError) as exc:
+        logger.warning("JWT decode failed: %s", exc)
         raise credentials_exception
 
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
+    try:
+        result = await db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+    except Exception as exc:
+        logger.exception("Database error looking up user %s: %s", user_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database error during authentication",
+        )
 
-    if user is None or not user.is_active:
+    if user is None:
+        logger.warning("User %s not found in database", user_id)
+        raise credentials_exception
+    if not user.is_active:
+        logger.warning("User %s is inactive", user_id)
         raise credentials_exception
 
     return user
