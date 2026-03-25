@@ -155,7 +155,7 @@ def _parse_ocr_text(text: str) -> dict:
 # Router
 # ---------------------------------------------------------------------------
 
-router = APIRouter()
+router = APIRouter(redirect_slashes=False)
 
 
 @router.post("/from-photo", response_model=MonumentOut, status_code=201)
@@ -189,7 +189,7 @@ async def create_monument_from_photo(
     return record
 
 
-@router.get("/", response_model=list[MonumentOut])
+@router.get("", response_model=list[MonumentOut])
 def list_monuments():
     """Return all monument records."""
     from app.main import monuments_db
