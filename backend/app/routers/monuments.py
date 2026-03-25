@@ -73,7 +73,7 @@ async def _ocr_space_extract_text(image_bytes: bytes) -> str:
     if not results:
         return ""
 
-    return results.get("ParsedText", "") or ""
+    return results[0].get("ParsedText", "") or ""
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +97,7 @@ _DATE_PATTERN = re.compile(
     re.VERBOSE | re.IGNORECASE,
 )
 
-_YEAR_RANGE_PATTERN = re.compile(r"(\\d{4})\\s*[-–—]\\s*(\\d{4})")
+_YEAR_RANGE_PATTERN = re.compile(r"(\d{4})\s*[-–—]\s*(\d{4})")
 
 
 def _parse_ocr_text(text: str) -> dict:
@@ -124,10 +124,10 @@ def _parse_ocr_text(text: str) -> dict:
                 seen.add(d)
                 unique_dates.append(d)
         if len(unique_dates) >= 2:
-            date_of_birth = unique_dates
-            date_of_death = unique_dates
+            date_of_birth = unique_dates[0]
+            date_of_death = unique_dates[1]
         elif len(unique_dates) == 1:
-            date_of_death = unique_dates
+            date_of_death = unique_dates[0]
 
     _BOILERPLATE = {"REST", "IN", "PEACE", "LOVING", "MEMORY", "OF", "RIP"}
     for line in lines:
