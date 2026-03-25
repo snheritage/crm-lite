@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth import get_current_user
+from app.database import get_db
+from app.models import Obit, User
 
 router = APIRouter()
 
@@ -22,10 +28,10 @@ FRONTRUNNER_PARAMS = {
 
 
 @router.post("/")
-async def scrape_chapelridge():
-    # Import the shared in-memory store from main
-    from app.main import obits_db
-
+async def scrape_chapelridge(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
@@ -48,11 +54,13 @@ async def scrape_chapelridge():
     records = body.get("data") or []
     new_obits: list[dict] = []
 
-    # Build a set of existing (deceased_name, date_of_death) pairs for fast lookup
-    existing_keys = {
-        (r["deceased_name"], r["date_of_death"])
-        for r in obits_db.values()
-    }
+    # Build a set of existing (deceased_name, date_of_death) pairs for current user
+    existing_result = await db.execute(
+        select(Obit.deceased_name, Obit.date_of_death).where(
+            Obit.user_id == current_user.id
+        )
+    )
+    existing_keys = {(row[0], row[1]) for row in existing_result.all()}
 
     for rec in records:
         name = rec.get("name", "Unknown")
@@ -60,18 +68,27 @@ async def scrape_chapelridge():
         if (name, dod) in existing_keys:
             continue
 
-        obit_id = str(uuid.uuid4())
-        record = {
-            "id": obit_id,
-            "deceased_name": name,
-            "date_of_death": dod,
-            "newspaper": "Chapel Ridge FH",
-            "monument_ordered": False,
-            "notes": rec.get("url", ""),
-            "created_at": datetime.utcnow().isoformat(),
-        }
-        obits_db[obit_id] = record
-        new_obits.append(record)
+        obit = Obit(
+            user_id=current_user.id,
+            deceased_name=name,
+            date_of_death=dod,
+            newspaper="Chapel Ridge FH",
+            monument_ordered=False,
+            notes=rec.get("url", ""),
+        )
+        db.add(obit)
+        await db.flush()
+        await db.refresh(obit)
+
+        new_obits.append({
+            "id": str(obit.id),
+            "deceased_name": obit.deceased_name,
+            "date_of_death": obit.date_of_death,
+            "newspaper": obit.newspaper,
+            "monument_ordered": obit.monument_ordered,
+            "notes": obit.notes,
+            "created_at": obit.created_at.isoformat(),
+        })
         existing_keys.add((name, dod))
 
     return new_obits
