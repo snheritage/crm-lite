@@ -9,9 +9,11 @@ from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
 
 from app.auth import get_current_user
 from app.database import engine, get_db
@@ -40,6 +42,21 @@ app.include_router(admin_router, prefix="/api/admin")
 app.include_router(auth_router, prefix="/api/auth")
 app.include_router(chapelridge_router, prefix="/api/obits/scrape/chapelridge")
 app.include_router(monuments_router, prefix="/api/monuments")
+
+
+# ---------------------------------------------------------------------------
+# Global exception handler – ensures CORS headers on 500 errors
+# ---------------------------------------------------------------------------
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch-all handler so unhandled exceptions still return a proper
+    JSONResponse that passes through the CORS middleware."""
+    logger.exception("Unhandled exception")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+    )
 
 
 # ---------------------------------------------------------------------------

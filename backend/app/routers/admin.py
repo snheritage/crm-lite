@@ -5,13 +5,11 @@ from __future__ import annotations
 import csv
 import io
 import logging
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import case, cast, func, literal, select, extract, String
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
@@ -104,13 +102,29 @@ async def admin_stats(
     db: AsyncSession = Depends(get_db),
 ):
     """Return dashboard statistics for admins."""
-    try:
-        # Total counts
-        total_monuments = (await db.execute(select(func.count()).select_from(Monument))).scalar() or 0
-        total_users = (await db.execute(select(func.count()).select_from(User))).scalar() or 0
-        total_obits = (await db.execute(select(func.count()).select_from(Obit))).scalar() or 0
 
-        # Monuments by cemetery – COALESCE handles potential NULLs
+    # --- Total counts ---------------------------------------------------
+    try:
+        total_monuments = (await db.execute(select(func.count()).select_from(Monument))).scalar() or 0
+    except Exception:
+        logger.exception("admin_stats: total_monuments query failed")
+        total_monuments = 0
+
+    try:
+        total_users = (await db.execute(select(func.count()).select_from(User))).scalar() or 0
+    except Exception:
+        logger.exception("admin_stats: total_users query failed")
+        total_users = 0
+
+    try:
+        total_obits = (await db.execute(select(func.count()).select_from(Obit))).scalar() or 0
+    except Exception:
+        logger.exception("admin_stats: total_obits query failed")
+        total_obits = 0
+
+    # --- Monuments by cemetery -----------------------------------------
+    monuments_by_cemetery: list[CemeteryCount] = []
+    try:
         by_cemetery_q = (
             select(
                 func.coalesce(Monument.cemetery_name, "Unknown").label("cemetery_name"),
@@ -123,8 +137,12 @@ async def admin_stats(
         monuments_by_cemetery = [
             CemeteryCount(cemetery_name=row[0], count=row[1]) for row in by_cemetery_rows
         ]
+    except Exception:
+        logger.exception("admin_stats: monuments_by_cemetery query failed")
 
-        # Monuments by user – LEFT JOIN so orphaned monuments don't break the query
+    # --- Monuments by user (LEFT JOIN for safety) ----------------------
+    monuments_by_user: list[UserMonumentCount] = []
+    try:
         by_user_q = (
             select(
                 func.coalesce(User.email, "deleted-user").label("email"),
@@ -141,30 +159,31 @@ async def admin_stats(
             UserMonumentCount(user_email=row[0], user_name=row[1], count=row[2])
             for row in by_user_rows
         ]
+    except Exception:
+        logger.exception("admin_stats: monuments_by_user query failed")
 
-        # Monuments by month – use extract() for portability instead of to_char,
-        # and wrap with COALESCE so NULL created_at doesn't crash the query.
-        month_expr = func.concat(
-            cast(extract("year", Monument.created_at), String),
-            literal("-"),
-            func.lpad(cast(extract("month", Monument.created_at), String), 2, "0"),
-        )
-        by_month_q = (
-            select(
-                month_expr.label("month"),
-                func.count().label("count"),
+    # --- Monuments by month (fetch dates, group in Python) -------------
+    monuments_by_month: list[MonthCount] = []
+    try:
+        all_dates = (
+            await db.execute(
+                select(Monument.created_at).where(Monument.created_at.is_not(None))
             )
-            .where(Monument.created_at.is_not(None))
-            .group_by(month_expr)
-            .order_by(month_expr.desc())
-        )
-        by_month_rows = (await db.execute(by_month_q)).all()
+        ).scalars().all()
+        month_counts: dict[str, int] = {}
+        for dt in all_dates:
+            key = dt.strftime("%Y-%m")
+            month_counts[key] = month_counts.get(key, 0) + 1
         monuments_by_month = [
-            MonthCount(month=row[0] if row[0] else "Unknown", count=row[1])
-            for row in by_month_rows
+            MonthCount(month=k, count=v)
+            for k, v in sorted(month_counts.items(), reverse=True)
         ]
+    except Exception:
+        logger.exception("admin_stats: monuments_by_month query failed")
 
-        # Recent monuments (last 10) with user info – LEFT JOIN for safety
+    # --- Recent monuments (last 10) with user info --------------------
+    recent_monuments: list[RecentMonument] = []
+    try:
         recent_q = (
             select(
                 Monument,
@@ -189,29 +208,18 @@ async def admin_stats(
             )
             for row in recent_rows
         ]
+    except Exception:
+        logger.exception("admin_stats: recent_monuments query failed")
 
-        return StatsResponse(
-            total_monuments=total_monuments,
-            total_users=total_users,
-            total_obits=total_obits,
-            monuments_by_cemetery=monuments_by_cemetery,
-            monuments_by_user=monuments_by_user,
-            monuments_by_month=monuments_by_month,
-            recent_monuments=recent_monuments,
-        )
-
-    except SQLAlchemyError as exc:
-        logger.exception("Database error in admin_stats: %s", exc)
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": f"Database error in admin stats: {exc}"},
-        )
-    except Exception as exc:
-        logger.exception("Unexpected error in admin_stats: %s", exc)
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": f"Unexpected error in admin stats: {exc}"},
-        )
+    return StatsResponse(
+        total_monuments=total_monuments,
+        total_users=total_users,
+        total_obits=total_obits,
+        monuments_by_cemetery=monuments_by_cemetery,
+        monuments_by_user=monuments_by_user,
+        monuments_by_month=monuments_by_month,
+        recent_monuments=recent_monuments,
+    )
 
 
 @router.get("/export/monuments")
